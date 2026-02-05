@@ -8,7 +8,7 @@ import os
 # ========================
 
 DISCORD_TOKEN = "DISCORD_TOKEN"
-GROQ_API_KEY = "GROK"
+GROQ_API_KEY = "GROQ_API_KEY"
 
 MODEL_NAME = "llama-3.1-8b-instant"
   # fast + good on Groq
@@ -103,3 +103,4 @@ async def on_message(message):
 # ========================
 
 bot.run(DISCORD_TOKEN)
+
