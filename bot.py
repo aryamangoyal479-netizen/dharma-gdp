@@ -7,15 +7,14 @@ import requests
 
 # ================== ENV ==================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")       # Groq AI token
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")   # Gemini token
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") # DeepSeek token
-HF_TOKEN = os.getenv("HF_TOKEN")               # HuggingFace token for images
+HF_TOKEN = os.getenv("HF_TOKEN")          # HuggingFace for images
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") # Groq text AI
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")   # Gemini text AI
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") # DeepSeek text AI
 
 # ================== SETTINGS ==================
 AI_COOLDOWN = 8  # seconds per user
 MAX_MEMORY = 6   # last messages per user
-MAX_DISCORD_LENGTH = 1900
 IMAGE_KEYWORDS = ["image", "draw", "picture", "illustrate", "art"]
 
 # ================== BOT SETUP ==================
@@ -35,13 +34,15 @@ def set_used(user_id):
     last_used[user_id] = time.time()
 
 def trim(text):
-    return text if len(text) <= MAX_DISCORD_LENGTH else text[:MAX_DISCORD_LENGTH] + "..."
+    return text if len(text) <= 1900 else text[:1900] + "..."
 
 # ================== IMAGE AI ==================
 def call_huggingface(prompt):
+    system_prompt = "Always generate an image using HuggingFace for any user prompt."
+    full_prompt = f"{system_prompt}\nUser prompt: {prompt}"
     url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    payload = {"inputs": prompt}
+    payload = {"inputs": full_prompt}
     r = requests.post(url, headers=headers, json=payload, timeout=60)
     r.raise_for_status()
     path = f"image_{int(time.time())}.png"
@@ -78,14 +79,14 @@ def get_ai_reply(user_id, prompt):
     messages = list(user_memory[user_id])
     messages.append({"role": "user", "content": prompt})
 
-    # Detect if image
+    # If prompt seems like an image request
     if any(word in prompt.lower() for word in IMAGE_KEYWORDS):
         image_path = call_huggingface(prompt)
         user_memory[user_id].append({"role": "user", "content": prompt})
         user_memory[user_id].append({"role": "assistant", "content": "[IMAGE GENERATED]"})
         return image_path, "IMAGE"
 
-    # Otherwise text AI
+    # Otherwise text AI fallback chain
     try:
         reply = call_groq(messages)
         provider = "Groq"
@@ -123,7 +124,6 @@ async def ai_command(ctx, *, prompt: str):
         return
 
     set_used(user_id)
-
     async with ctx.typing():
         try:
             result, provider = get_ai_reply(user_id, prompt)
