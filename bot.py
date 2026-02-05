@@ -38,7 +38,7 @@ def trim(text):
 
 # ================== IMAGE AI ==================
 def call_huggingface(prompt):
-    system_prompt = "Always generate an image using HuggingFace for any user prompt."
+    system_prompt = "Always generate an image for the user prompt."
     full_prompt = f"{system_prompt}\nUser prompt: {prompt}"
     url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
@@ -79,8 +79,8 @@ def get_ai_reply(user_id, prompt):
     messages = list(user_memory[user_id])
     messages.append({"role": "user", "content": prompt})
 
-    # If prompt seems like an image request
-    if any(word in prompt.lower() for word in IMAGE_KEYWORDS):
+    # Detect if image
+    if any(word in prompt.lower() for word in ["image", "draw", "picture", "illustrate", "art"]):
         image_path = call_huggingface(prompt)
         user_memory[user_id].append({"role": "user", "content": prompt})
         user_memory[user_id].append({"role": "assistant", "content": "[IMAGE GENERATED]"})
@@ -102,7 +102,6 @@ def get_ai_reply(user_id, prompt):
                 reply = "❌ All text AI providers failed."
                 provider = "None"
 
-    # Save memory
     user_memory[user_id].append({"role": "user", "content": prompt})
     user_memory[user_id].append({"role": "assistant", "content": reply})
     return trim(reply), provider
