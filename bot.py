@@ -1,10 +1,11 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 import time
+import aiohttp
 
 from groq import Groq
-import openai
+import google.generativeai as genai
+from openai import OpenAI   # For DeepSeek (OpenAI-compatible)
 
 # ========================
 # CONFIG
@@ -13,14 +14,10 @@ import openai
 DISCORD_TOKEN = "DISCORD_TOKEN"
 
 GROQ_API_KEY = "GROQ_API_KEY"
-ALT_API_KEY_1 = "ALT_API_KEY_1"
-ALT_API_KEY_2 = "ALT_API_KEY_2"
+ALT_API_KEY_1 = "ALT_API_KEY_1"   # GEMINI KEY
+ALT_API_KEY_2 = "ALT_API_KEY_2"   # DEEPSEEK KEY
 
-# --- MODELS ---
 MODEL_GROQ_TEXT = "llama-3.1-8b-instant"
-MODEL_ALT_TEXT = "gpt-3.5-turbo"
-MODEL_ALT_VISION = "gpt-4.1-mini"
-MODEL_IMAGE_GEN = "gpt-image-1"
 
 SYSTEM_PROMPT = "You are a helpful Discord AI assistant."
 
@@ -32,10 +29,18 @@ DISCORD_LIMIT = 1900
 # CLIENTS
 # ========================
 
+# Groq
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-openai_client_1 = openai.OpenAI(api_key=ALT_API_KEY_1)
-openai_client_2 = openai.OpenAI(api_key=ALT_API_KEY_2)
+# Gemini
+genai.configure(api_key=ALT_API_KEY_1)
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+
+# DeepSeek (OpenAI compatible)
+deepseek_client = OpenAI(
+    api_key=ALT_API_KEY_2,
+    base_url="https://api.deepseek.com"
+)
 
 # ========================
 # DISCORD SETUP
@@ -84,6 +89,8 @@ def build_messages(user_id, user_message):
     return messages
 
 def trim_reply(text):
+    if not text:
+        return "❌ Empty response from AI."
     if len(text) > DISCORD_LIMIT:
         return text[:DISCORD_LIMIT] + "\n\n[Reply trimmed]"
     return text
@@ -93,6 +100,7 @@ def trim_reply(text):
 # ========================
 
 def get_ai_reply(messages, temperature=0.2, max_tokens=300):
+    # ---- TRY GROQ ----
     try:
         completion = groq_client.chat.completions.create(
             model=MODEL_GROQ_TEXT,
@@ -105,104 +113,62 @@ def get_ai_reply(messages, temperature=0.2, max_tokens=300):
     except Exception as e:
         print("❌ Groq failed:", e)
 
+    # ---- TRY GEMINI ----
     try:
-        completion = openai_client_1.chat.completions.create(
-            model=MODEL_ALT_TEXT,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        print("✅ Using Alt API 1")
-        return completion.choices[0].message.content
+        prompt = "\n".join([m["content"] for m in messages if m["role"] != "system"])
+        response = gemini_model.generate_content(prompt)
+        print("✅ Using Gemini")
+        return response.text
     except Exception as e:
-        print("❌ Alt API 1 failed:", e)
+        print("❌ Gemini failed:", e)
 
+    # ---- TRY DEEPSEEK ----
     try:
-        completion = openai_client_2.chat.completions.create(
-            model=MODEL_ALT_TEXT,
+        completion = deepseek_client.chat.completions.create(
+            model="deepseek-chat",
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens
         )
-        print("✅ Using Alt API 2")
+        print("✅ Using DeepSeek")
         return completion.choices[0].message.content
     except Exception as e:
-        print("❌ Alt API 2 failed:", e)
+        print("❌ DeepSeek failed:", e)
 
     return "❌ All AI providers are currently unavailable."
 
 # ========================
-# VISION (IMAGE UNDERSTANDING)
+# IMAGE UNDERSTANDING (GEMINI VISION)
 # ========================
 
-def analyze_image_with_text(image_url, user_text):
+async def analyze_image_with_text(image_url, user_text):
     try:
-        completion = openai_client_1.chat.completions.create(
-            model=MODEL_ALT_VISION,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user_text},
-                        {"type": "image_url", "image_url": {"url": image_url}}
-                    ]
-                }
-            ],
-            max_tokens=300
-        )
-        print("🖼️ Using Alt API 1 Vision")
-        return completion.choices[0].message.content
-    except Exception as e:
-        print("❌ Vision API 1 failed:", e)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as resp:
+                img_bytes = await resp.read()
 
-    try:
-        completion = openai_client_2.chat.completions.create(
-            model=MODEL_ALT_VISION,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user_text},
-                        {"type": "image_url", "image_url": {"url": image_url}}
-                    ]
-                }
-            ],
-            max_tokens=300
-        )
-        print("🖼️ Using Alt API 2 Vision")
-        return completion.choices[0].message.content
-    except Exception as e:
-        print("❌ Vision API 2 failed:", e)
+        response = gemini_model.generate_content([
+            user_text or "Describe this image.",
+            {
+                "mime_type": "image/jpeg",
+                "data": img_bytes
+            }
+        ])
 
-    return "❌ Image analysis is currently unavailable."
+        print("🖼️ Using Gemini Vision")
+        return response.text
+
+    except Exception as e:
+        print("❌ Gemini Vision failed:", e)
+        return "❌ Image analysis is currently unavailable."
 
 # ========================
-# IMAGE GENERATION
+# IMAGE GENERATION (PLACEHOLDER)
 # ========================
 
 def generate_image(prompt):
-    try:
-        result = openai_client_1.images.generate(
-            model=MODEL_IMAGE_GEN,
-            prompt=prompt,
-            size="1024x1024"
-        )
-        print("🎨 Using Alt API 1 Image Gen")
-        return result.data[0].url
-    except Exception as e:
-        print("❌ Image gen API 1 failed:", e)
-
-    try:
-        result = openai_client_2.images.generate(
-            model=MODEL_IMAGE_GEN,
-            prompt=prompt,
-            size="1024x1024"
-        )
-        print("🎨 Using Alt API 2 Image Gen")
-        return result.data[0].url
-    except Exception as e:
-        print("❌ Image gen API 2 failed:", e)
-
+    # Gemini does NOT reliably return image URLs via API.
+    # This is a placeholder so your bot doesn't crash.
     return None
 
 # ========================
@@ -219,7 +185,7 @@ async def on_ready():
         print("Slash sync error:", e)
 
 # ========================
-# PREFIX COMMAND (TEXT)
+# PREFIX COMMAND
 # ========================
 
 @bot.command(name="ai")
@@ -242,7 +208,7 @@ async def ai_chat(ctx, *, message: str):
         await ctx.send(reply)
 
 # ========================
-# SLASH COMMAND (TEXT)
+# SLASH COMMAND
 # ========================
 
 @bot.tree.command(name="ai", description="Chat with the AI")
@@ -285,7 +251,10 @@ async def imagine(interaction: discord.Interaction, prompt: str):
     if image_url:
         await interaction.followup.send(f"🎨 **Prompt:** {prompt}\n{image_url}")
     else:
-        await interaction.followup.send("❌ Image generation failed.")
+        await interaction.followup.send(
+            "⚠️ Image generation is not fully supported with Gemini API.\n"
+            "Use another provider (OpenAI, Stability, Replicate) for real image gen."
+        )
 
 # ========================
 # MENTION / REPLY + IMAGE VISION
@@ -317,9 +286,9 @@ async def on_message(message):
             # ---- IF IMAGE ATTACHED (VISION) ----
             if message.attachments:
                 img = message.attachments[0]
-                reply = analyze_image_with_text(
+                reply = await analyze_image_with_text(
                     img.url,
-                    message.content or "Describe this image."
+                    message.content
                 )
                 reply = trim_reply(reply)
                 set_cooldown(user_id)
