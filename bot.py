@@ -1,182 +1,151 @@
 import os
-import time
 import discord
 from discord.ext import commands
-from discord import app_commands
+import aiohttp
 
-import requests
-
-# ========================
+# =====================
 # CONFIG
-# ========================
+# =====================
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")      # optional
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # optional
+ALT_IMAGE_API_KEY = os.getenv("ALT_IMAGE_API_KEY")  # for image gen
 
-MAX_HISTORY = 6
-COOLDOWN_SECONDS = 10
-DISCORD_CHAR_LIMIT = 1900
+TEXT_COOLDOWN_SECONDS = 5
 
-# ========================
-# MEMORY + COOLDOWN
-# ========================
-
-user_memory = {}
-user_cooldowns = {}
-
-# ========================
+# =====================
 # DISCORD SETUP
-# ========================
+# =====================
 
 intents = discord.Intents.default()
+intents.message_content = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ========================
-# AI HELPERS
-# ========================
+user_cooldowns = {}
 
-def trim_text(text):
-    if len(text) > DISCORD_CHAR_LIMIT:
-        return text[:DISCORD_CHAR_LIMIT] + "\n\n... (trimmed)"
+# =====================
+# UTILS
+# =====================
+
+def is_on_cooldown(user_id):
+    import time
+    now = time.time()
+    last = user_cooldowns.get(user_id, 0)
+    if now - last < TEXT_COOLDOWN_SECONDS:
+        return True
+    user_cooldowns[user_id] = now
+    return False
+
+def trim_for_discord(text, limit=1900):
+    if len(text) > limit:
+        return text[:limit] + "\n\n✂️ *Reply trimmed*"
     return text
 
+# =====================
+# TEXT AI (GROQ EXAMPLE)
+# =====================
 
-def groq_chat(messages):
+async def call_text_ai(prompt):
     url = "https://api.groq.com/openai/v1/chat/completions"
+
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
 
-    data = {
+    payload = {
         "model": "llama-3.1-8b-instant",
-        "messages": messages
+        "messages": [
+            {"role": "system", "content": "You are a helpful AI assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7
     }
 
-    r = requests.post(url, headers=headers, json=data, timeout=60)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload) as resp:
+            data = await resp.json()
+            return data["choices"][0]["message"]["content"]
 
+# =====================
+# IMAGE AI (PLACEHOLDER)
+# =====================
 
-def gemini_chat(prompt):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
+async def generate_image(prompt):
+    # 🔴 REPLACE THIS WITH YOUR REAL IMAGE API
+    # Example: Gemini, DeepSeek, Replicate, etc.
 
-    r = requests.post(url, json=data, timeout=60)
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    # For now, return dummy image
+    return "https://picsum.photos/512"
 
-
-def deepseek_chat(prompt):
-    url = "https://api.deepseek.com/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "model": "deepseek-chat",
-        "messages": [{"role": "user", "content": prompt}]
-    }
-
-    r = requests.post(url, headers=headers, json=data, timeout=60)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
-
-
-def call_text_ai(messages):
-    # Try Groq → Gemini → DeepSeek
-    try:
-        return groq_chat(messages)
-    except:
-        pass
-
-    try:
-        if GEMINI_API_KEY:
-            prompt = messages[-1]["content"]
-            return gemini_chat(prompt)
-    except:
-        pass
-
-    try:
-        if DEEPSEEK_API_KEY:
-            prompt = messages[-1]["content"]
-            return deepseek_chat(prompt)
-    except:
-        pass
-
-    return "❌ All AI APIs failed or quota exceeded."
-
-
-def generate_image_alt(prompt):
-    # Example placeholder (replace with real image API if you want)
-    # You can connect to any free image API here
-    return f"🖼️ Image generation request received for:\n**{prompt}**\n(Connect your image API here)"
-
-# ========================
-# SLASH COMMAND
-# ========================
-
-@bot.tree.command(name="ai", description="Chat with AI")
-@app_commands.describe(prompt="Your message to AI")
-async def ai(interaction: discord.Interaction, prompt: str):
-
-    user_id = interaction.user.id
-    now = time.time()
-
-    # Cooldown
-    if user_id in user_cooldowns:
-        if now - user_cooldowns[user_id] < COOLDOWN_SECONDS:
-            await interaction.response.send_message(
-                f"⏳ Cooldown! Wait {COOLDOWN_SECONDS} seconds.",
-                ephemeral=True
-            )
-            return
-
-    user_cooldowns[user_id] = now
-
-    await interaction.response.defer(thinking=False)
-    await interaction.channel.typing()
-
-    # Init memory
-    if user_id not in user_memory:
-        user_memory[user_id] = []
-
-    user_memory[user_id].append({"role": "user", "content": prompt})
-    user_memory[user_id] = user_memory[user_id][-MAX_HISTORY:]
-
-    # IMAGE MODE (ONLY ALT AI)
-    if "make image" in prompt.lower() or "generate image" in prompt.lower():
-        reply = generate_image_alt(prompt)
-
-    else:
-        messages = [{"role": "system", "content": "You are a helpful Discord AI bot."}]
-        messages.extend(user_memory[user_id])
-
-        reply = call_text_ai(messages)
-
-    user_memory[user_id].append({"role": "assistant", "content": reply})
-    user_memory[user_id] = user_memory[user_id][-MAX_HISTORY:]
-
-    reply = trim_text(reply)
-
-    await interaction.followup.send(reply)
-
-# ========================
+# =====================
 # EVENTS
-# ========================
+# =====================
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
     print(f"✅ Logged in as {bot.user}")
 
-# ========================
-# START BOT
-# ========================
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    # IMPORTANT: Prevent auto AI from replying to commands
+    if message.content.startswith("!"):
+        await bot.process_commands(message)
+        return
+
+    # OPTIONAL: Auto AI reply (if you want)
+    # Comment this out if you DON'T want auto replies
+    """
+    if is_on_cooldown(message.author.id):
+        return
+
+    await message.channel.typing()
+    try:
+        reply = await call_text_ai(message.content)
+        reply = trim_for_discord(reply)
+        await message.reply(reply)
+    except Exception as e:
+        await message.reply(f"❌ AI Error: {e}")
+    """
+
+# =====================
+# COMMANDS
+# =====================
+
+@bot.command()
+async def ai(ctx, *, prompt: str):
+    if is_on_cooldown(ctx.author.id):
+        await ctx.send("⏳ Slow down bro, cooldown active.")
+        return
+
+    await ctx.typing()
+
+    try:
+        reply = await call_text_ai(prompt)
+        reply = trim_for_discord(reply)
+        await ctx.send(reply)
+    except Exception as e:
+        await ctx.send(f"❌ AI Error: {e}")
+
+@bot.command()
+async def imagine(ctx, *, prompt: str):
+    await ctx.typing()
+
+    try:
+        image_url = await generate_image(prompt)
+
+        await ctx.send(f"🖼️ **Prompt:** {prompt}")
+        await ctx.send(image_url)
+
+    except Exception as e:
+        await ctx.send(f"❌ Image generation failed: {e}")
+
+# =====================
+# RUN
+# =====================
 
 bot.run(DISCORD_TOKEN)
