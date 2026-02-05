@@ -10,6 +10,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")  # HuggingFace API token
 
 # ================== SETTINGS ==================
 AI_COOLDOWN = 8  # seconds per user
@@ -58,41 +59,48 @@ def call_deepseek(prompt):
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
+def call_huggingface(prompt):
+    url = "https://api-inference.huggingface.co/models/gpt2"  # Example text model
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 200}}
+    r = requests.post(url, headers=headers, json=payload, timeout=30)
+    r.raise_for_status()
+    output = r.json()
+    # HuggingFace sometimes returns a list of dicts
+    if isinstance(output, list):
+        return output[0]["generated_text"]
+    return str(output)
+
 # ================== AI ROUTER ==================
 def get_ai_reply(user_id, prompt):
     messages = list(user_memory[user_id])
     messages.append({"role": "user", "content": prompt})
 
-    # Try Groq
+    # Try Groq first
     try:
         reply = call_groq(messages)
-        provider = "Groq"
     except Exception:
-        # Fallback Gemini
         try:
             reply = call_gemini(prompt)
-            provider = "Gemini"
         except Exception:
-            # Fallback DeepSeek
             try:
                 reply = call_deepseek(prompt)
-                provider = "DeepSeek"
             except Exception:
-                reply = "❌ All text AI providers failed."
-                provider = "None"
+                try:
+                    reply = call_huggingface(prompt)
+                except Exception:
+                    reply = "❌ All text AI providers failed."
 
     # Save memory
     user_memory[user_id].append({"role": "user", "content": prompt})
     user_memory[user_id].append({"role": "assistant", "content": reply})
-    return trim(reply), provider
+    return trim(reply)
 
 # ================== EVENTS ==================
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    print("Commands loaded:")
-    for cmd in bot.commands:
-        print("-", cmd.name)
+    print("Bot is ready!")
 
 # ================== PREFIX COMMAND ==================
 @bot.command(name="ai")
@@ -105,8 +113,8 @@ async def ai_command(ctx, *, prompt: str):
     set_used(user_id)
     async with ctx.typing():
         try:
-            result, provider = get_ai_reply(user_id, prompt)
-            await ctx.send(f"🤖 **({provider})**\n{result}")
+            result = get_ai_reply(user_id, prompt)
+            await ctx.send(result)
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
 
@@ -132,8 +140,8 @@ async def on_message(message):
         set_used(user_id)
         async with message.channel.typing():
             try:
-                result, provider = get_ai_reply(user_id, prompt)
-                await message.channel.send(f"🤖 **({provider})**\n{result}")
+                result = get_ai_reply(user_id, prompt)
+                await message.channel.send(result)
             except Exception as e:
                 await message.channel.send(f"❌ Error: {e}")
 
