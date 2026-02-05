@@ -1,55 +1,23 @@
+import os
+import time
 import discord
 from discord.ext import commands
-import time
-import aiohttp
+from discord import app_commands
 
-from groq import Groq
-import google.generativeai as genai
-from openai import OpenAI   # For DeepSeek (OpenAI-compatible)
+import requests
 
 # ========================
 # CONFIG
 # ========================
 
-DISCORD_TOKEN = "DISCORD_TOKEN"
-
-GROQ_API_KEY = "GROQ_API_KEY"
-ALT_API_KEY_1 = "ALT_API_KEY_1"   # GEMINI KEY
-ALT_API_KEY_2 = "ALT_API_KEY_2"   # DEEPSEEK KEY
-
-MODEL_GROQ_TEXT = "llama-3.1-8b-instant"
-
-SYSTEM_PROMPT = "You are a helpful Discord AI assistant."
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")      # optional
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # optional
 
 MAX_HISTORY = 6
 COOLDOWN_SECONDS = 10
-DISCORD_LIMIT = 1900
-
-# ========================
-# CLIENTS
-# ========================
-
-# Groq
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-# Gemini
-genai.configure(api_key=ALT_API_KEY_1)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
-
-# DeepSeek (OpenAI compatible)
-deepseek_client = OpenAI(
-    api_key=ALT_API_KEY_2,
-    base_url="https://api.deepseek.com"
-)
-
-# ========================
-# DISCORD SETUP
-# ========================
-
-intents = discord.Intents.default()
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
+DISCORD_CHAR_LIMIT = 1900
 
 # ========================
 # MEMORY + COOLDOWN
@@ -59,117 +27,144 @@ user_memory = {}
 user_cooldowns = {}
 
 # ========================
-# UTILS
+# DISCORD SETUP
 # ========================
 
-def is_on_cooldown(user_id):
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ========================
+# AI HELPERS
+# ========================
+
+def trim_text(text):
+    if len(text) > DISCORD_CHAR_LIMIT:
+        return text[:DISCORD_CHAR_LIMIT] + "\n\n... (trimmed)"
+    return text
+
+
+def groq_chat(messages):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": "llama-3.1-8b-instant",
+        "messages": messages
+    }
+
+    r = requests.post(url, headers=headers, json=data, timeout=60)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
+def gemini_chat(prompt):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+
+    r = requests.post(url, json=data, timeout=60)
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def deepseek_chat(prompt):
+    url = "https://api.deepseek.com/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}]
+    }
+
+    r = requests.post(url, headers=headers, json=data, timeout=60)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
+def call_text_ai(messages):
+    # Try Groq → Gemini → DeepSeek
+    try:
+        return groq_chat(messages)
+    except:
+        pass
+
+    try:
+        if GEMINI_API_KEY:
+            prompt = messages[-1]["content"]
+            return gemini_chat(prompt)
+    except:
+        pass
+
+    try:
+        if DEEPSEEK_API_KEY:
+            prompt = messages[-1]["content"]
+            return deepseek_chat(prompt)
+    except:
+        pass
+
+    return "❌ All AI APIs failed or quota exceeded."
+
+
+def generate_image_alt(prompt):
+    # Example placeholder (replace with real image API if you want)
+    # You can connect to any free image API here
+    return f"🖼️ Image generation request received for:\n**{prompt}**\n(Connect your image API here)"
+
+# ========================
+# SLASH COMMAND
+# ========================
+
+@bot.tree.command(name="ai", description="Chat with AI")
+@app_commands.describe(prompt="Your message to AI")
+async def ai(interaction: discord.Interaction, prompt: str):
+
+    user_id = interaction.user.id
     now = time.time()
-    last = user_cooldowns.get(user_id, 0)
-    return (now - last) < COOLDOWN_SECONDS
 
-def set_cooldown(user_id):
-    user_cooldowns[user_id] = time.time()
+    # Cooldown
+    if user_id in user_cooldowns:
+        if now - user_cooldowns[user_id] < COOLDOWN_SECONDS:
+            await interaction.response.send_message(
+                f"⏳ Cooldown! Wait {COOLDOWN_SECONDS} seconds.",
+                ephemeral=True
+            )
+            return
 
-def add_to_memory(user_id, role, content):
+    user_cooldowns[user_id] = now
+
+    await interaction.response.defer(thinking=False)
+    await interaction.channel.typing()
+
+    # Init memory
     if user_id not in user_memory:
         user_memory[user_id] = []
 
-    user_memory[user_id].append({"role": role, "content": content})
+    user_memory[user_id].append({"role": "user", "content": prompt})
+    user_memory[user_id] = user_memory[user_id][-MAX_HISTORY:]
 
-    if len(user_memory[user_id]) > MAX_HISTORY:
-        user_memory[user_id] = user_memory[user_id][-MAX_HISTORY:]
+    # IMAGE MODE (ONLY ALT AI)
+    if "make image" in prompt.lower() or "generate image" in prompt.lower():
+        reply = generate_image_alt(prompt)
 
-def build_messages(user_id, user_message):
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    if user_id in user_memory:
+    else:
+        messages = [{"role": "system", "content": "You are a helpful Discord AI bot."}]
         messages.extend(user_memory[user_id])
 
-    messages.append({"role": "user", "content": user_message})
-    return messages
+        reply = call_text_ai(messages)
 
-def trim_reply(text):
-    if not text:
-        return "❌ Empty response from AI."
-    if len(text) > DISCORD_LIMIT:
-        return text[:DISCORD_LIMIT] + "\n\n[Reply trimmed]"
-    return text
+    user_memory[user_id].append({"role": "assistant", "content": reply})
+    user_memory[user_id] = user_memory[user_id][-MAX_HISTORY:]
 
-# ========================
-# MULTI-API FAILOVER (TEXT)
-# ========================
+    reply = trim_text(reply)
 
-def get_ai_reply(messages, temperature=0.2, max_tokens=300):
-    # ---- TRY GROQ ----
-    try:
-        completion = groq_client.chat.completions.create(
-            model=MODEL_GROQ_TEXT,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        print("✅ Using Groq")
-        return completion.choices[0].message.content
-    except Exception as e:
-        print("❌ Groq failed:", e)
-
-    # ---- TRY GEMINI ----
-    try:
-        prompt = "\n".join([m["content"] for m in messages if m["role"] != "system"])
-        response = gemini_model.generate_content(prompt)
-        print("✅ Using Gemini")
-        return response.text
-    except Exception as e:
-        print("❌ Gemini failed:", e)
-
-    # ---- TRY DEEPSEEK ----
-    try:
-        completion = deepseek_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        print("✅ Using DeepSeek")
-        return completion.choices[0].message.content
-    except Exception as e:
-        print("❌ DeepSeek failed:", e)
-
-    return "❌ All AI providers are currently unavailable."
-
-# ========================
-# IMAGE UNDERSTANDING (GEMINI VISION)
-# ========================
-
-async def analyze_image_with_text(image_url, user_text):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(image_url) as resp:
-                img_bytes = await resp.read()
-
-        response = gemini_model.generate_content([
-            user_text or "Describe this image.",
-            {
-                "mime_type": "image/jpeg",
-                "data": img_bytes
-            }
-        ])
-
-        print("🖼️ Using Gemini Vision")
-        return response.text
-
-    except Exception as e:
-        print("❌ Gemini Vision failed:", e)
-        return "❌ Image analysis is currently unavailable."
-
-# ========================
-# IMAGE GENERATION (PLACEHOLDER)
-# ========================
-
-def generate_image(prompt):
-    # Gemini does NOT reliably return image URLs via API.
-    # This is a placeholder so your bot doesn't crash.
-    return None
+    await interaction.followup.send(reply)
 
 # ========================
 # EVENTS
@@ -177,139 +172,11 @@ def generate_image(prompt):
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash commands.")
-    except Exception as e:
-        print("Slash sync error:", e)
+    await bot.tree.sync()
+    print(f"✅ Logged in as {bot.user}")
 
 # ========================
-# PREFIX COMMAND
-# ========================
-
-@bot.command(name="ai")
-async def ai_chat(ctx, *, message: str):
-    user_id = ctx.author.id
-
-    if is_on_cooldown(user_id):
-        await ctx.send("⏳ Slow down!")
-        return
-
-    async with ctx.typing():
-        messages = build_messages(user_id, message)
-        reply = get_ai_reply(messages)
-        reply = trim_reply(reply)
-
-        add_to_memory(user_id, "user", message)
-        add_to_memory(user_id, "assistant", reply)
-
-        set_cooldown(user_id)
-        await ctx.send(reply)
-
-# ========================
-# SLASH COMMAND
-# ========================
-
-@bot.tree.command(name="ai", description="Chat with the AI")
-async def slash_ai(interaction: discord.Interaction, message: str):
-    user_id = interaction.user.id
-
-    if is_on_cooldown(user_id):
-        await interaction.response.send_message("⏳ Slow down!", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-
-    messages = build_messages(user_id, message)
-    reply = get_ai_reply(messages)
-    reply = trim_reply(reply)
-
-    add_to_memory(user_id, "user", message)
-    add_to_memory(user_id, "assistant", reply)
-
-    set_cooldown(user_id)
-    await interaction.followup.send(reply)
-
-# ========================
-# SLASH COMMAND (IMAGE GEN)
-# ========================
-
-@bot.tree.command(name="imagine", description="Generate an image from a prompt")
-async def imagine(interaction: discord.Interaction, prompt: str):
-    user_id = interaction.user.id
-
-    if is_on_cooldown(user_id):
-        await interaction.response.send_message("⏳ Slow down!", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-
-    image_url = generate_image(prompt)
-    set_cooldown(user_id)
-
-    if image_url:
-        await interaction.followup.send(f"🎨 **Prompt:** {prompt}\n{image_url}")
-    else:
-        await interaction.followup.send(
-            "⚠️ Image generation is not fully supported with Gemini API.\n"
-            "Use another provider (OpenAI, Stability, Replicate) for real image gen."
-        )
-
-# ========================
-# MENTION / REPLY + IMAGE VISION
-# ========================
-
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-
-    is_trigger = (
-        bot.user in message.mentions or
-        (
-            message.reference and
-            message.reference.resolved and
-            message.reference.resolved.author == bot.user
-        )
-    )
-
-    if is_trigger:
-        user_id = message.author.id
-
-        if is_on_cooldown(user_id):
-            await message.reply("⏳ Slow down!")
-            return
-
-        async with message.channel.typing():
-
-            # ---- IF IMAGE ATTACHED (VISION) ----
-            if message.attachments:
-                img = message.attachments[0]
-                reply = await analyze_image_with_text(
-                    img.url,
-                    message.content
-                )
-                reply = trim_reply(reply)
-                set_cooldown(user_id)
-                await message.reply(reply)
-                return
-
-            # ---- NORMAL TEXT ----
-            messages = build_messages(user_id, message.content)
-            reply = get_ai_reply(messages)
-            reply = trim_reply(reply)
-
-            add_to_memory(user_id, "user", message.content)
-            add_to_memory(user_id, "assistant", reply)
-
-            set_cooldown(user_id)
-            await message.reply(reply)
-
-    await bot.process_commands(message)
-
-# ========================
-# RUN
+# START BOT
 # ========================
 
 bot.run(DISCORD_TOKEN)
