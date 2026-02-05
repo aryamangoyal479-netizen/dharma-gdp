@@ -7,12 +7,16 @@ import requests
 
 # ================== ENV ==================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-HF_TOKEN = os.getenv("HF_TOKEN")  # HuggingFace token
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")       # Groq AI token
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")   # Gemini token
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY") # DeepSeek token
+HF_TOKEN = os.getenv("HF_TOKEN")               # HuggingFace token for images
 
 # ================== SETTINGS ==================
 AI_COOLDOWN = 8  # seconds per user
-MAX_MEMORY = 6  # last messages per user
+MAX_MEMORY = 6   # last messages per user
 MAX_DISCORD_LENGTH = 1900
+IMAGE_KEYWORDS = ["image", "draw", "picture", "illustrate", "art"]
 
 # ================== BOT SETUP ==================
 intents = discord.Intents.default()
@@ -40,10 +44,67 @@ def call_huggingface(prompt):
     payload = {"inputs": prompt}
     r = requests.post(url, headers=headers, json=payload, timeout=60)
     r.raise_for_status()
-    image_path = f"image_{int(time.time())}.png"
-    with open(image_path, "wb") as f:
+    path = f"image_{int(time.time())}.png"
+    with open(path, "wb") as f:
         f.write(r.content)
-    return image_path
+    return path
+
+# ================== TEXT AI ==================
+def call_groq(messages):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    data = {"model": "llama-3.1-8b-instant", "messages": messages, "temperature": 0.7}
+    r = requests.post(url, headers=headers, json=data, timeout=30)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+def call_gemini(prompt):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+    data = {"contents": [{"parts": [{"text": prompt}]}]}
+    r = requests.post(url, json=data, timeout=30)
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+def call_deepseek(prompt):
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
+    data = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}]}
+    r = requests.post(url, headers=headers, json=data, timeout=30)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+# ================== AI ROUTER ==================
+def get_ai_reply(user_id, prompt):
+    messages = list(user_memory[user_id])
+    messages.append({"role": "user", "content": prompt})
+
+    # Detect if image
+    if any(word in prompt.lower() for word in IMAGE_KEYWORDS):
+        image_path = call_huggingface(prompt)
+        user_memory[user_id].append({"role": "user", "content": prompt})
+        user_memory[user_id].append({"role": "assistant", "content": "[IMAGE GENERATED]"})
+        return image_path, "IMAGE"
+
+    # Otherwise text AI
+    try:
+        reply = call_groq(messages)
+        provider = "Groq"
+    except Exception:
+        try:
+            reply = call_gemini(prompt)
+            provider = "Gemini"
+        except Exception:
+            try:
+                reply = call_deepseek(prompt)
+                provider = "DeepSeek"
+            except Exception:
+                reply = "❌ All text AI providers failed."
+                provider = "None"
+
+    # Save memory
+    user_memory[user_id].append({"role": "user", "content": prompt})
+    user_memory[user_id].append({"role": "assistant", "content": reply})
+    return trim(reply), provider
 
 # ================== EVENTS ==================
 @bot.event
@@ -62,16 +123,16 @@ async def ai_command(ctx, *, prompt: str):
         return
 
     set_used(user_id)
-    user_memory[user_id].append(prompt)
 
-    # Typing indicator while generating
     async with ctx.typing():
         try:
-            image_path = call_huggingface(prompt)
-            await ctx.send(f"🖼️ **Prompt:** {prompt}")
-            await ctx.send(file=discord.File(image_path))
+            result, provider = get_ai_reply(user_id, prompt)
+            if provider == "IMAGE":
+                await ctx.send(file=discord.File(result))
+            else:
+                await ctx.send(f"🤖 **({provider})**\n{result}")
         except Exception as e:
-            await ctx.send(f"❌ Image generation failed: {e}")
+            await ctx.send(f"❌ Error: {e}")
 
 # ================== RUN BOT ==================
 bot.run(DISCORD_TOKEN)
