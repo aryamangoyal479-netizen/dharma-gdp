@@ -3,3 +3,5 @@ python-dotenv
 requests
 flask
 aiohttp
+groq
+google-generativeai
