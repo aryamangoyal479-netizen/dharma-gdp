@@ -13,8 +13,8 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")  # HuggingFace API token
 
 # ================== SETTINGS ==================
-AI_COOLDOWN = 8  # seconds per user
-MAX_MEMORY = 6   # last messages per user
+AI_COOLDOWN = 2  # seconds per user
+MAX_MEMORY = 2   # last messages per user
 
 # ================== BOT SETUP ==================
 intents = discord.Intents.default()
