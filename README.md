@@ -1,1 +1,1 @@
-paste ur ai apis ad discord bot and also put this on a hosting site like katabump or railway or replita and u hav a working ai also all the intents and I think messages etc or just admin auth invite link should work
+paste ur ai apis ada discord bot token and also put this on a hosting site like katabump or railway or replita and u hav a working ai also all the intents and I think messages etc or just admin auth invite link should work
