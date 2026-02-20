@@ -6,11 +6,11 @@ from collections import defaultdict, deque
 import requests
 
 # ================== ENV ==================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")  # HuggingFace API token
+DISCORD_TOKEN = DISCORD_TOKEN
+GROQ_API_KEY = GROQ_API_KEY
+GEMINI_API_KEY = GEMINI_API_KEY"
+DEEPSEEK_API_KEY = DEEPSEEK_API_KEY
+HF_TOKEN = HF_TOKEN 
 
 # ================== SETTINGS ==================
 AI_COOLDOWN = 2  # seconds per user
